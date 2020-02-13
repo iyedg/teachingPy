@@ -1,47 +1,82 @@
 from typing import Any, List
+from itertools import combinations
 
 import attr
 import matplotlib.pyplot as plt
 import numpy as np
+import sympy
 from loguru import logger
 from sympy import Eq, lambdify, solve, sympify
+from sympy.abc import x, y
+
+
+# Courtesy of https://github.com/sympy/sympy/issues/5642#issuecomment-516419510
+# Handles cases when solution is a constant function
+def broadcast(fun):
+    return lambda *x: np.broadcast_arrays(fun(*x), *x)[0]
 
 
 @attr.s()
 class Constraint:
     lhs: str = attr.ib()
-    x_range: np.array = attr.ib()
     rhs: str = attr.ib(default="0")
     label: str = attr.ib(default="")
-    transformation: Any = attr.ib(default=None)
-    # transformation: Any = None  # TODO: check for correct type
+    operator: str = attr.ib(default="<=")
 
-    # property
-    def evaluate(self):
-        s_lhs = sympify(self.lhs)
-        s_rhs = sympify(self.rhs)
-        n_symbols = len(s_lhs.free_symbols.union(s_rhs.free_symbols))
+    def __attrs_post_init__(self):
+        self._free_symbols: int = None
+        self._func = None
+        self._s_lhs = sympify(self.lhs)
+        self._s_rhs = sympify(self.rhs)
+        self.lhs = self._s_lhs
+        self.rhs = self._s_rhs
 
-        logger.debug(f"{s_lhs} = {s_rhs} has {n_symbols} symbols")
+    @property
+    def func(self):
+        if not self._func:
+            # TODO: validate on init
+            assert (x in self.free_symbols) or (y in self.free_symbols)
+            assert 0 < len(self.free_symbols) <= 2
 
-        if self.rhs == "0":
-            logger.debug(f"{s_lhs} has {len(s_lhs.free_symbols)}")
-            return lambdify("x", self.lhs)(self.x_range)
-        elif self.transformation:
-            # TODO: use y when x is not in args
-            return lambdify("x", self.transformation.lhs)(self.x_range)
-        else:
-            # Needs to be smarter about x = a and y = b forms
-            try:
-                new_lhs = solve(Eq(s_lhs, s_rhs), "y")[0]
-            except IndexError as e:
-                logger.error(e)
-                # TODO: check for the presence of two variables to prevent this
-                return (
-                    self.x_range
-                )  # TODO: remove !!! used just to avoid problems downstream
-            self.transformation = Constraint(lhs=new_lhs, rhs=0, x_range=self.x_range)
-            return self.evaluate()
+            # Solving lhs = rhs
+            e = Eq(self._s_lhs, self._s_rhs)
+
+            # TODO: an edge case is x = x which returns a boolean
+            logger.debug(f"Equation: {e}")
+
+            # Chcking for y first to avoid checking
+            # for the number of args. If y is in args,
+            # we solve for y regardless of whether
+            # there is an x or not
+            if y in self.free_symbols:
+                logger.debug("y in args, solving for y")
+                solutions = solve(e, y)
+            else:
+                logger.debug("solving for x")
+                solutions = solve(e, x)
+
+            if len(solutions) < 1:
+                raise Exception(f"No solutions found for {self.lhs} = {self.rhs}")
+            elif len(solutions) > 1:
+                raise Exception(
+                    f"Too many solutions found for {self.lhs} = {self.rhs}, constraints must be linear"
+                )
+
+            solution = solutions[0]
+            logger.debug(f"solution: {solution}")
+            if y in self.free_symbols:
+                self._func = broadcast(lambdify(x, solution, "numpy"))
+            else:
+                self._func = broadcast(lambdify(y, solution, "numpy"))
+        return self._func
+
+    @property
+    def free_symbols(self):
+        if not self._free_symbols:
+            s_lhs = sympify(self.lhs)
+            s_rhs = sympify(self.rhs)
+            self._free_symbols = s_lhs.free_symbols.union(s_rhs.free_symbols)
+        return self._free_symbols
 
 
 @attr.s()
@@ -56,21 +91,44 @@ class GraphicalProblem:
         else:
             self.constraints.extend(constraints)
 
-    def plot_constraint(self, constraint, ax=None, *args, **kwargs):
+    def plot_constraint(self, constraint, _range, ax=None, *args, **kwargs):
         ax = ax or plt.gca()
-        ax.plot(
-            constraint.x_range,
-            constraint.evaluate(),
-            label=constraint.label,
-            *args,
-            **kwargs,
-        )
+        # TODO: handle when only y or only x
+        # Possibly check for free_symbols
+        if len(constraint.free_symbols) == 1 and y in constraint.free_symbols:
+            ax.plot(
+                constraint.func(_range),
+                _range,
+                label=constraint.label,
+                *args,
+                **kwargs,
+            )
+        else:
+            ax.plot(
+                _range,
+                constraint.func(_range),
+                label=constraint.label,
+                *args,
+                **kwargs,
+            )
 
-    def plot_constraints(self, ax=None, *args, **kwargs):
+    def plot_constraints(self, _range, ax=None, *args, **kwargs):
         ax = ax or plt.gca()
         for constraint in self.constraints:
-            self.plot_constraint(constraint, ax, *args, **kwargs)
+            self.plot_constraint(constraint, _range, ax, *args, **kwargs)
         plt.grid(True)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         plt.legend()
+
+    def intersection_points(self):
+        intersections = []
+        for constraint1, constraint2 in combinations(self.constraints, 2):
+            e1 = Eq(constraint1.lhs, constraint1.rhs)
+            e2 = Eq(constraint2.lhs, constraint2.rhs)
+            intersection = sympy.linsolve([e1, e2], [x, y])
+            if intersection != sympy.EmptySet:
+                intersections.append(intersection)
+            else:
+                logger.warning(f"{e1} and {e2} have no intersections")
+        return intersections
