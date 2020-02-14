@@ -42,17 +42,14 @@ class Constraint:
             e = Eq(self._s_lhs, self._s_rhs)
 
             # TODO: an edge case is x = x which returns a boolean
-            logger.debug(f"Equation: {e}")
 
             # Chcking for y first to avoid checking
             # for the number of args. If y is in args,
             # we solve for y regardless of whether
             # there is an x or not
             if y in self.free_symbols:
-                logger.debug("y in args, solving for y")
                 solutions = solve(e, y)
             else:
-                logger.debug("solving for x")
                 solutions = solve(e, x)
 
             if len(solutions) < 1:
@@ -63,7 +60,6 @@ class Constraint:
                 )
 
             solution = solutions[0]
-            logger.debug(f"solution: {solution}")
             if y in self.free_symbols:
                 self._func = broadcast(lambdify(x, solution, "numpy"))
             else:
@@ -93,24 +89,16 @@ class GraphicalProblem:
 
     def plot_constraint(self, constraint, _range, ax=None, *args, **kwargs):
         ax = ax or plt.gca()
-        # TODO: handle when only y or only x
-        # Possibly check for free_symbols
-        if len(constraint.free_symbols) == 1 and y in constraint.free_symbols:
-            ax.plot(
-                constraint.func(_range),
-                _range,
-                label=constraint.label,
-                *args,
-                **kwargs,
-            )
+        if (len(constraint.free_symbols) == 1) and (x in constraint.free_symbols):
+            x_range = constraint.func(_range)
+            y_range = _range
         else:
-            ax.plot(
-                _range,
-                constraint.func(_range),
-                label=constraint.label,
-                *args,
-                **kwargs,
-            )
+            y_range = constraint.func(_range)
+            x_range = _range
+
+        ax.plot(
+            x_range, y_range, label=constraint.label, *args, **kwargs,
+        )
 
     def plot_constraints(self, _range, ax=None, *args, **kwargs):
         ax = ax or plt.gca()
